@@ -1,0 +1,113 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calculatrice de voyage</title>
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #eef2f7;
+  padding: 30px 15px;
+}
+.calculatrice {
+  max-width: 420px;
+  margin: 30px auto;
+  background: white;
+  padding: 25px;
+  border-radius: 15px;
+  box-shadow: 0 4px 18px #0002;
+}
+h2 { text-align: center; }
+label { display: block; margin-top: 18px; }
+input, select, button {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  margin-top: 8px;
+  font-size: 16px;
+  border-radius: 8px;
+}
+button {
+  background: #1769aa;
+  color: white;
+  border: none;
+  cursor: pointer;
+}
+.effacer { background: #777; }
+#resultat {
+  text-align: center;
+  font-size: 24px;
+  font-weight: bold;
+  margin-top: 22px;
+}
+.note { font-size: 13px; color: #555; }
+</style>
+</head>
+<body>
+<div class="calculatrice">
+  <h2>Calculatrice de voyage</h2>
+
+  <label for="direction">Conversion</label>
+  <select id="direction">
+    <option value="cad-eur">CAD vers EUR</option>
+    <option value="eur-cad">EUR vers CAD</option>
+  </select>
+
+  <label for="montant">Montant à convertir</label>
+  <input id="montant" type="text" inputmode="decimal"
+         value="250">
+
+  <label for="taux">Taux : 1 CAD = combien d'EUR?</label>
+  <input id="taux" type="text" inputmode="decimal"
+         value="0,62">
+
+  <p class="note">Taux d'exemple à modifier au besoin.</p>
+
+  <button onclick="calculer()">Calculer</button>
+  <button class="effacer" onclick="effacer()">Effacer</button>
+
+  <div id="resultat" aria-live="polite"></div>
+</div>
+
+<script>
+function lireNombre(id) {
+  const texte = document.getElementById(id).value;
+  return Number(texte.trim().replace(",", "."));
+}
+
+function calculer() {
+  const montantTexte = document.getElementById("montant").value;
+  const tauxTexte = document.getElementById("taux").value;
+  const montant = lireNombre("montant");
+  const taux = lireNombre("taux");
+  const direction = document.getElementById("direction").value;
+  const zone = document.getElementById("resultat");
+
+  if (!montantTexte.trim() || !tauxTexte.trim() ||
+      !Number.isFinite(montant) || !Number.isFinite(taux) ||
+      montant < 0 || taux <= 0) {
+    zone.textContent = "Entre un montant et un taux valides.";
+    return;
+  }
+
+  const valeur = direction === "cad-eur"
+    ? montant * taux
+    : montant / taux;
+
+  const devise = direction === "cad-eur" ? "EUR" : "CAD";
+
+  zone.textContent = valeur.toLocaleString("fr-CA", {
+    style: "currency",
+    currency: devise
+  });
+}
+
+function effacer() {
+  document.getElementById("montant").value = "";
+  document.getElementById("resultat").textContent = "";
+}
+</script>
+</body>
+</html>
