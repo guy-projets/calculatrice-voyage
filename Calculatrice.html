@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calculatrice de voyage</title>
+<style>
+body { font-family: Arial, sans-serif; background: #eef2f7; padding: 30px 15px; }
+.calculatrice { max-width: 420px; margin: 30px auto; background: white; padding: 25px; border-radius: 15px; box-shadow: 0 4px 18px #0002; }
+h2 { text-align: center; }
+label { display: block; margin-top: 18px; }
+input, select, button { width: 100%; box-sizing: border-box; padding: 12px; margin-top: 8px; font-size: 16px; border-radius: 8px; }
+input, select { border: 1px solid #8795a6; }
+input[readonly] { background: #f2f5f8; color: #333; }
+button { background: #1769aa; color: white; border: none; cursor: pointer; }
+button:disabled { opacity: .65; cursor: wait; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #e69a00; outline-offset: 3px; }
+.effacer { background: #666; }
+.option { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.option input { width: 18px; height: 18px; margin: 0; }
+.informations { background: #f2f5f8; padding: 12px; border-radius: 8px; margin-top: 16px; }
+.informations p { margin: 6px 0; line-height: 1.45; }
+#resultat { text-align: center; font-size: 24px; font-weight: bold; margin-top: 22px; overflow-wrap: anywhere; }
+.note { font-size: 13px; color: #444; line-height: 1.5; }
+#stockage { color: #854000; }
+</style>
+</head>
+<body>
+<main class="calculatrice">
+  <h2>Calculatrice de voyage</h2>
+
+  <label for="direction">Conversion</label>
+  <select id="direction">
+    <option value="cad-eur">CAD vers EUR</option>
+    <option value="eur-cad">EUR vers CAD</option>
+    <option value="cad-usd">CAD vers USD</option>
+    <option value="usd-cad">USD vers CAD</option>
+  </select>
+
+  <label for="montant">Montant à convertir</label>
+  <input id="montant" type="text" inputmode="decimal" value="250">
+
+  <label id="taux-label" for="taux">Taux : 1 CAD = combien d’EUR ?</label>
+  <input id="taux" type="text" inputmode="decimal" readonly aria-describedby="mode taux-date">
+  <label class="option" for="manuel">
+    <input id="manuel" type="checkbox"> Saisir un taux manuellement
+  </label>
+
+  <div class="informations note">
+    <p id="mode">Taux automatique.</p>
+    <p id="etat" role="status">Recherche des derniers taux…</p>
+    <p id="taux-date">Date du taux automatique : non disponible.</p>
+    <p id="synchronisation">Dernière synchronisation : aucune.</p>
+    <p id="stockage" role="status"></p>
+  </div>
+  <button id="actualiser" type="button">Actualiser les taux</button>
+  <p class="note">Source : <a href="https://frankfurter.dev/v1/" target="_blank" rel="noopener noreferrer">Frankfurter</a>.
+    Taux de référence quotidiens, hors frais de change. La date du taux peut précéder celle de la synchronisation, notamment les fins de semaine.</p>
+
+  <button id="calculer" type="button">Calculer</button>
+  <button id="effacer" class="effacer" type="button">Effacer</button>
+  <div id="resultat" aria-live="polite"></div>
+  <p class="note">Pour utiliser cette calculatrice hors ligne, conservez ce fichier sur votre appareil et ouvrez-le au moins une fois avec Internet.
+    Les derniers taux sont enregistrés dans ce navigateur. Utilisez le même navigateur et le même emplacement de fichier pour les retrouver.</p>
+  <noscript>Activez JavaScript pour utiliser la calculatrice.</noscript>
+</main>
+
+<script>
+"use strict";
+const CLE_TAUX = "calculatrice-voyage.cad-eur-usd.v2";
+const API_TAUX = "https://api.frankfurter.dev/v1/latest?base=CAD&symbols=EUR,USD";
+const INTERVALLE = 60 * 60 * 1000;
+const element = id => document.getElementById(id);
+let derniersTaux = {};
+const tauxManuels = { EUR: "", USD: "" };
+let derniereDevise = "EUR";
+let dernierEchec = false;
+let enCours = false;
+let derniereTentative = 0;
+
+function dateValide(date) {
+  if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const valeur = new Date(date + "T00:00:00Z");
+  return Number.isFinite(valeur.getTime()) && valeur.toISOString().slice(0, 10) === date;
+}
+
+function tauxValide(taux) {
+  return taux && typeof taux.rate === "number" && Number.isFinite(taux.rate) && taux.rate > 0 &&
+    dateValide(taux.date) && typeof taux.fetchedAt === "string" && Number.isFinite(Date.parse(taux.fetchedAt));
+}
+
+function deviseCible() {
+  return element("direction").value.includes("usd") ? "USD" : "EUR";
+}
+
+function afficherTaux() {
+  const devise = deviseCible();
+  const taux = derniersTaux[devise];
+  element("taux-label").textContent = "Taux : 1 CAD = combien de " + devise + " ?";
+  element("taux").value = element("manuel").checked
+    ? tauxManuels[devise]
+    : (taux ? String(taux.rate).replace(".", ",") : "");
+  element("taux-date").textContent = "Date du taux automatique " + devise + " : " + (taux
+    ? new Date(taux.date + "T00:00:00Z").toLocaleDateString("fr-CA", { timeZone: "UTC" }) + "."
+    : "non disponible.");
+  element("synchronisation").textContent = "Dernière synchronisation " + devise + " : " + (taux
+    ? new Date(taux.fetchedAt).toLocaleString("fr-CA") + "." : "aucune.");
+}
+
+function chargerTaux() {
+  try {
+    const texte = localStorage.getItem(CLE_TAUX);
+    if (texte) {
+      const taux = JSON.parse(texte);
+      for (const devise of ["EUR", "USD"]) {
+        if (tauxValide(taux?.[devise])) derniersTaux[devise] = taux[devise];
+      }
+      if (!Object.keys(derniersTaux).length) throw new Error("Taux enregistrés invalides");
+    } else {
+      // Récupérer l'ancien taux EUR s'il existe, sans toucher à son enregistrement.
+      const ancien = localStorage.getItem("calculatrice-voyage.cad-eur.v1");
+      if (ancien) {
+        const taux = JSON.parse(ancien);
+        if (!tauxValide(taux)) throw new Error("Ancien taux invalide");
+        derniersTaux.EUR = taux;
+      }
+    }
+  } catch {
+    element("stockage").textContent = "Les taux enregistrés sont illisibles ou le stockage est indisponible. Connectez-vous pour obtenir les taux, ou saisissez-les manuellement.";
+  }
+  afficherTaux();
+}
+
+function enregistrerTaux() {
+  try {
+    localStorage.setItem(CLE_TAUX, JSON.stringify(derniersTaux));
+    element("stockage").textContent = "Derniers taux EUR et USD sauvegardés pour une utilisation hors ligne.";
+  } catch {
+    element("stockage").textContent = "Ce navigateur ne permet pas la sauvegarde. Les taux restent utilisables dans cette page, mais leur conservation après fermeture n’est pas garantie.";
+  }
+}
+
+function afficherEtat() {
+  const taux = derniersTaux[deviseCible()];
+  if (navigator.onLine === false || dernierEchec) {
+    element("etat").textContent = (navigator.onLine === false ? "Hors ligne" : "Mise à jour indisponible") + (taux
+      ? " — dernier taux automatique conservé."
+      : " — aucun taux enregistré pour cette devise. Connectez-vous ou saisissez un taux manuellement.");
+  } else if (enCours) {
+    element("etat").textContent = taux
+      ? "Actualisation en cours — dernier taux disponible conservé."
+      : "Recherche des derniers taux…";
+  } else {
+    element("etat").textContent = taux ? "Taux automatique à jour." : "Aucun taux automatique disponible pour cette devise.";
+  }
+}
+
+async function actualiserTaux() {
+  if (enCours) return;
+  derniereTentative = Date.now();
+  if (navigator.onLine === false) {
+    afficherEtat();
+    return;
+  }
+  enCours = true;
+  element("actualiser").disabled = true;
+  dernierEchec = false;
+  afficherEtat();
+  const controleur = new AbortController();
+  const delai = setTimeout(() => controleur.abort(), 10000);
+  try {
+    const reponse = await fetch(API_TAUX, { signal: controleur.signal, cache: "no-store", credentials: "omit" });
+    if (!reponse.ok) throw new Error("Service indisponible");
+    const donnees = await reponse.json();
+    if (donnees.base !== "CAD") throw new Error("Devise de base invalide");
+    const nouveauxTaux = {};
+    const fetchedAt = new Date().toISOString();
+    for (const devise of ["EUR", "USD"]) {
+      const taux = { rate: donnees.rates?.[devise], date: donnees.date, fetchedAt };
+      if (!tauxValide(taux)) throw new Error("Réponse invalide");
+      if (derniersTaux[devise] && taux.date < derniersTaux[devise].date) {
+        throw new Error("Taux antérieur au taux sauvegardé");
+      }
+      nouveauxTaux[devise] = taux;
+    }
+    // Sauvegarder les deux taux ensemble, seulement après validation complète.
+    derniersTaux = nouveauxTaux;
+    enregistrerTaux();
+    afficherTaux();
+    if (!element("manuel").checked && element("resultat").textContent) calculer();
+  } catch {
+    dernierEchec = true;
+  } finally {
+    clearTimeout(delai);
+    enCours = false;
+    element("actualiser").disabled = false;
+    afficherEtat();
+  }
+}
+
+function lireNombre(id) {
+  return Number(element(id).value.trim().replace(/\s/g, "").replace(",", "."));
+}
+
+function calculer() {
+  const montant = lireNombre("montant");
+  const taux = lireNombre("taux");
+  const zone = element("resultat");
+  if (!element("montant").value.trim() || !element("taux").value.trim() ||
+      !Number.isFinite(montant) || !Number.isFinite(taux) || montant < 0 || taux <= 0) {
+    zone.textContent = "Entre un montant et un taux valides.";
+    return;
+  }
+  const depuisCAD = element("direction").value.startsWith("cad-");
+  const valeur = depuisCAD ? montant * taux : montant / taux;
+  if (!Number.isFinite(valeur)) {
+    zone.textContent = "Le montant est trop élevé pour être converti.";
+    return;
+  }
+  zone.textContent = valeur.toLocaleString("fr-CA", { style: "currency", currency: depuisCAD ? deviseCible() : "CAD" });
+}
+
+element("calculer").addEventListener("click", calculer);
+element("effacer").addEventListener("click", () => {
+  element("montant").value = "";
+  element("resultat").textContent = "";
+  element("montant").focus();
+});
+element("actualiser").addEventListener("click", actualiserTaux);
+element("manuel").addEventListener("change", () => {
+  const manuel = element("manuel").checked;
+  element("taux").readOnly = !manuel;
+  element("mode").textContent = manuel
+    ? "Taux manuel utilisé pour le calcul. Il n’est pas sauvegardé et sa date n’est pas vérifiée."
+    : "Taux automatique utilisé pour le calcul.";
+  if (manuel) {
+    tauxManuels[deviseCible()] = element("taux").value;
+    element("taux").focus();
+  }
+  afficherTaux();
+  if (element("resultat").textContent) calculer();
+});
+element("direction").addEventListener("change", () => {
+  if (element("manuel").checked) tauxManuels[derniereDevise] = element("taux").value;
+  derniereDevise = deviseCible();
+  afficherTaux();
+  afficherEtat();
+  if (element("resultat").textContent) calculer();
+});
+for (const id of ["montant", "taux"]) {
+  element(id).addEventListener("input", () => {
+    if (id === "taux" && element("manuel").checked) tauxManuels[deviseCible()] = element("taux").value;
+    element("resultat").textContent = "";
+  });
+  element(id).addEventListener("keydown", evenement => {
+    if (evenement.key === "Enter") calculer();
+  });
+}
+window.addEventListener("online", actualiserTaux);
+window.addEventListener("offline", afficherEtat);
+function actualiserSiNecessaire() {
+  if (!document.hidden && Date.now() - derniereTentative >= INTERVALLE) actualiserTaux();
+}
+document.addEventListener("visibilitychange", actualiserSiNecessaire);
+setInterval(actualiserSiNecessaire, INTERVALLE);
+chargerTaux();
+actualiserTaux();
+</script>
+</body>
+</html>
